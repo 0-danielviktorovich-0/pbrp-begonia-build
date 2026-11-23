@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <manifest>
-    <remote name="methyl" fetch="https://github.com/methylphetamine" />
-
-    <!-- The `pb` branch of PitchBlackRecoveryProject/Utils no longer exists;
-         the helper script it provided is not needed to build the image. -->
-    <remove-project name="vendor_utils" />
+    <!-- TWRP-12.1 build for begonia on the Svarog kernel.
+         Remote points at OUR fork of pitpitpo/device_xiaomi_begonia-twrp
+         (branch twrp-12.1). The original manifest referenced the dead
+         'methylphetamine' account (404) — do not restore it. -->
+    <remote name="svarog" fetch="https://github.com/0-danielviktorovich-0" />
 
     <project path="device/xiaomi/begonia"
-             name="device_xiaomi_begonia-pbrp"
-             remote="methyl"
-             revision="unified"
+             name="device_xiaomi_begonia-twrp"
+             remote="svarog"
+             revision="twrp-12.1"
              clone-depth="1" />
 </manifest>

@@ -1,4 +1,4 @@
-name: PBRP build (begonia)
+name: TWRP build (begonia, Svarog kernel)
 
 on:
   workflow_dispatch:
@@ -6,19 +6,19 @@ on:
       makefile:
         description: 'Lunch target'
         required: false
-        default: 'pb_begonia-eng'
+        default: 'twrp_begonia-eng'
       build_target:
         description: 'Make target'
         required: false
         default: 'recoveryimage'
       manifest_branch:
-        description: 'PBRP manifest branch'
+        description: 'TWRP manifest branch'
         required: false
-        default: 'android-12.1'
+        default: 'twrp-12.1'
       device_branch:
-        description: 'Device tree branch (unified = dynamic+erofs + FBEv2 decryption / non-dynamic+ext4-f2fs)'
+        description: 'Device tree branch (our fork: Svarog kernel + gadget fix)'
         required: false
-        default: 'unified'
+        default: 'twrp-12.1'
       jobs:
         description: 'Parallel make jobs'
         required: false
@@ -40,14 +40,14 @@ permissions:
   contents: write
 
 env:
-  MANIFEST_URL: 'https://github.com/PitchBlackRecoveryProject/manifest_pb.git'
-  MANIFEST_BRANCH: ${{ github.event.inputs.manifest_branch || 'android-12.1' }}
+  MANIFEST_URL: 'https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git'
+  MANIFEST_BRANCH: ${{ github.event.inputs.manifest_branch || 'twrp-12.1' }}
   SRC_DIR: 'aosp'
   CCACHE_DIR: '${{ github.workspace }}/.ccache'
 
 jobs:
   build:
-    name: Compile PBRP recovery.img
+    name: Compile TWRP recovery.img
     runs-on: ubuntu-22.04
     timeout-minutes: 350
 
@@ -60,7 +60,7 @@ jobs:
       - name: Show parameters
         run: |
           echo "manifest   : $MANIFEST_URL @ $MANIFEST_BRANCH"
-          echo "lunch      : ${{ inputs.makefile || 'pb_begonia-eng' }}"
+          echo "lunch      : ${{ inputs.makefile || 'twrp_begonia-eng' }}"
           echo "target     : ${{ inputs.build_target || 'recoveryimage' }}"
           echo "jobs       : ${{ inputs.jobs || '4' }}"
           echo "ccache     : ${{ inputs.ccache || 'true' }}"
@@ -146,10 +146,10 @@ jobs:
             -u "$MANIFEST_URL" \
             -b "$MANIFEST_BRANCH" \
             --depth=1
-          # Device tree + removal of the dead upstream vendor_utils project.
+          # Device tree: our fork with the Svarog kernel prebuilt + gadget fix.
           mkdir -p .repo/local_manifests
           cp "$GITHUB_WORKSPACE/local_manifests/begonia.xml" .repo/local_manifests/
-          DT_BRANCH="${{ inputs.device_branch || 'unified' }}"
+          DT_BRANCH="${{ inputs.device_branch || 'twrp-12.1' }}"
           sed -i -E "s|revision=\"[^\"]+\"|revision=\"${DT_BRANCH}\"|" .repo/local_manifests/begonia.xml
           echo "--- local manifest in effect (device tree: $DT_BRANCH) ---"
           cat .repo/local_manifests/begonia.xml
@@ -169,15 +169,18 @@ jobs:
           df -h /
           echo "--- device tree present? ---"
           ls device/xiaomi/begonia
+          echo "--- our kernel in place? ---"
+          ls -la device/xiaomi/begonia/prebuilt/ device/xiaomi/begonia/prebuilt/dtb/
+          sha256sum device/xiaomi/begonia/prebuilt/Image.gz device/xiaomi/begonia/prebuilt/dtb/mtk.dtb
 
-      - name: Record PBRP source revisions
+      - name: Record TWRP source revisions
         run: |
           cd "$SRC_DIR"
-          echo "=== PBRP manifest ==="
+          echo "=== TWRP manifest ==="
           echo "branch: $MANIFEST_BRANCH"
           git -C .repo/manifests log -1 --format='%H %cs %s'
           echo "=== key project revisions ==="
-          repo forall bootable/recovery build/make build/soong system/core vendor/pb device/xiaomi/begonia \
+          repo forall bootable/recovery build/make build/soong system/core vendor/twrp device/xiaomi/begonia \
             -c 'printf "%-30s %s %s\n" "$REPO_PATH" "$(git rev-parse HEAD)" "$(git log -1 --format=%cs)"'
 
       - name: Trim disk before build
@@ -195,18 +198,18 @@ jobs:
           USE_CCACHE: ${{ inputs.ccache || 'true' }}
           ALLOW_MISSING_DEPENDENCIES: 'true'
           BUILD_JOBS: ${{ inputs.jobs || '4' }}
-          MAKEFILE_NAME: ${{ inputs.makefile || 'pb_begonia-eng' }}
+          MAKEFILE_NAME: ${{ inputs.makefile || 'twrp_begonia-eng' }}
           BUILD_TARGET: ${{ inputs.build_target || 'recoveryimage' }}
-          BUILD_USERNAME: methylphetamine
-          BUILD_HOSTNAME: poxproject
+          BUILD_USERNAME: danielviktorovich
+          BUILD_HOSTNAME: svarog
         run: |
           cd "$SRC_DIR"
           set -o pipefail
           source build/envsetup.sh
           lunch "$MAKEFILE_NAME"
           mka "$BUILD_TARGET" -j"$BUILD_JOBS" \
-            BUILD_USERNAME=methylphetamine \
-            BUILD_HOSTNAME=poxproject 2>&1 | tee build.log
+            BUILD_USERNAME=danielviktorovich \
+            BUILD_HOSTNAME=svarog 2>&1 | tee build.log
 
       - name: Locate and verify output image
         id: image
@@ -251,51 +254,6 @@ jobs:
           echo "gofile_url=$URL" >> "$GITHUB_OUTPUT"
           echo "Gofile: $URL"
 
-      - name: Upload to Telegram
-        if: success()
-        continue-on-error: true
-        env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GOFILE_URL: ${{ steps.gofile.outputs.gofile_url }}
-        run: |
-          cd "$GITHUB_WORKSPACE"
-          if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT" ]; then
-            echo "::warning::TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not configured"
-            exit 0
-          fi
-          SHA=$(sha256sum recovery.img | awk '{print $1}')
-          SIZE=$(stat -c%s recovery.img)
-          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          CAPTION=$(printf 'PBRP recovery - begonia\nSHA256: %s\nGofile: %s\nRun: %s' \
-            "$SHA" "${GOFILE_URL:-n/a}" "$RUN_URL")
-          API="https://api.telegram.org/bot${TG_TOKEN}"
-
-          if [ "$SIZE" -le 49000000 ]; then
-            curl -sS -o /tmp/tg.json \
-              -F "chat_id=${TG_CHAT}" \
-              -F "document=@recovery.img" \
-              --form-string "caption=${CAPTION}" \
-              "${API}/sendDocument" || true
-            if jq -e '.ok == true' /tmp/tg.json >/dev/null 2>&1; then
-              echo "Telegram: recovery.img sent as a document"
-              exit 0
-            fi
-            echo "::warning::Telegram sendDocument failed; sending a link instead"
-          fi
-
-          TEXT=$(printf 'PBRP recovery - begonia\nSHA256: %s\nGofile: %s\nRun: %s\nImage size: %s bytes' \
-            "$SHA" "${GOFILE_URL:-n/a}" "$RUN_URL" "$SIZE")
-          curl -sS -o /tmp/tg.json \
-            --data-urlencode "chat_id=${TG_CHAT}" \
-            --data-urlencode "text=${TEXT}" \
-            "${API}/sendMessage" || true
-          if jq -e '.ok == true' /tmp/tg.json >/dev/null 2>&1; then
-            echo "Telegram: link sent"
-          else
-            echo "::warning::Telegram notification failed"
-          fi
-
       - name: Notify Telegram on failure
         if: failure()
         continue-on-error: true
@@ -307,7 +265,7 @@ jobs:
           RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           curl -sS -o /tmp/tg.json \
             --data-urlencode "chat_id=${TG_CHAT}" \
-            --data-urlencode "text=PBRP begonia build FAILED: ${RUN_URL}" \
+            --data-urlencode "text=TWRP begonia (Svarog kernel) build FAILED: ${RUN_URL}" \
             "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" || true
 
       - name: ccache stats
@@ -334,7 +292,7 @@ jobs:
       - name: Upload recovery.img artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pbrp-begonia-recovery
+          name: twrp-begonia-recovery
           path: recovery.img
           if-no-files-found: error
           retention-days: 30
@@ -357,14 +315,15 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE"
           SHA=$(sha256sum recovery.img | awk '{print $1}')
-          TAG="${GITHUB_REF_NAME:-pbrp-begonia-$(date +%Y%m%d%H%M%S)}"
+          TAG="${GITHUB_REF_NAME:-twrp-begonia-$(date +%Y%m%d%H%M%S)}"
           {
-            echo "PBRP recovery for Redmi Note 8 Pro (begonia)"
+            echo "TWRP recovery for Redmi Note 8 Pro (begonia) on the Svarog kernel"
             echo
+            echo "- kernel: Svarog (saikrishna 4.14.357-openela, Image.gz in prebuilt/)"
             echo "- commit: $GITHUB_SHA"
             echo "- sha256: \`$SHA\`"
             echo "- built by run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           } > release-notes.md
-          gh release create "$TAG" recovery.img --title "PBRP begonia $TAG" \
+          gh release create "$TAG" recovery.img --title "TWRP begonia $TAG" \
             --notes-file release-notes.md || \
           gh release upload "$TAG" recovery.img --clobber
